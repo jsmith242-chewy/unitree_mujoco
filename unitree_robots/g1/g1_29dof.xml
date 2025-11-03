@@ -60,11 +60,12 @@
   </asset>
 
   <worldbody>
-    <body name="pelvis" pos="0 0 0.793">
+    <body name="pelvis" pos="0 0 0.8">
       <site name="imu" size="0.01" pos="0.0 0.0 0.0" />
       <inertial pos="0 0 -0.07605" quat="1 0 -0.000399148 0" mass="3.813"
         diaginertia="0.010549 0.0093089 0.0079184" />
-      <joint name="floating_base_joint" type="free" limited="false" actuatorfrclimited="false" />
+      <!-- Fix base joint-->
+      <!-- <joint name="floating_base_joint" type="free" limited="false" actuatorfrclimited="false" /> -->
       <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.2 0.2 0.2 1"
         mesh="pelvis" />
       <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.7 0.7 0.7 1"
@@ -209,6 +210,8 @@
             <inertial pos="0.00331658 0.000261533 0.179856"
               quat="0.999831 0.000376204 0.0179895 -0.00377704" mass="9.598"
               diaginertia="0.12407 0.111951 0.0325382" />
+            <!-- For some reason the camera is still pointing off to the left and straight forward - need to adjust the position and orientation-->
+            <camera name="head_cam" mode="fixed" pos="0.04765 0 0.462687" xyaxes="0 -1 0 0 0 1" fovy="70"/>
             <joint name="waist_pitch_joint" pos="0 0 0" axis="0 1 0" range="-0.52 0.52"
               actuatorfrcrange="-50 50" class="torso_motor"/>
             <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.7 0.7 0.7 1"
@@ -219,7 +222,7 @@
             <geom pos="0.0039635 0 -0.054" quat="1 0 0 0" type="mesh" rgba="0.2 0.2 0.2 1"
               mesh="logo_link" />
             <geom pos="0.0039635 0 -0.054" type="mesh" contype="0" conaffinity="0" group="1"
-              density="0" rgba="0.2 0.2 0.2 1" mesh="head_link" />
+                density="0" rgba="0.2 0.2 0.2 1" mesh="head_link" />
             <geom pos="0.0039635 0 -0.054" type="mesh" rgba="0.2 0.2 0.2 1" mesh="head_link" />
             <geom pos="0.0039635 0 -0.054" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0"
               group="1" density="0" rgba="0.7 0.7 0.7 1" mesh="waist_support_link" />
