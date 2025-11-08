@@ -20,8 +20,6 @@ image = None
 
 mj_model = mujoco.MjModel.from_xml_path(config.ROBOT_SCENE)
 mj_data = mujoco.MjData(mj_model)
-width = 640
-height = 480
 
 if config.ENABLE_ELASTIC_BAND:
     elastic_band = ElasticBand()
@@ -52,9 +50,9 @@ def SimulationThread():
         unitree.SetupJoystick(device_id=0, js_type=config.JOYSTICK_TYPE)
     if config.PRINT_SCENE_INFORMATION:
         unitree.PrintSceneInformation()
-
-    renderer = mujoco.Renderer(mj_model, height, width)
-    step_count = 0
+    if config.HEAD_CAMERA_ENABLE:
+        renderer = mujoco.Renderer(mj_model, config.HEAD_CAMERA_HEIGHT, config.HEAD_CAMERA_WIDTH)
+        step_count = 0
 
     while viewer.is_running():
         step_start = time.perf_counter()
@@ -67,12 +65,19 @@ def SimulationThread():
                     mj_data.qpos[:3], mj_data.qvel[:3]
                 )
         mujoco.mj_step(mj_model, mj_data)
-        # TODO: this will only update the image every 10 steps, regardless of the physics step rate
-        # in the future ,we could make the image update rate constant and calculate the number of steps needed to update the image
-        if step_count % 10 == 0:
-            renderer.update_scene(mj_data, camera="head_cam")
-            image = renderer.render()
-    
+        if config.HEAD_CAMERA_ENABLE:
+            # Render head camera image at a constant rate
+            if step_count * config.SIMULATE_DT >= 1/config.HEAD_CAMERA_FPS:
+                renderer.update_scene(mj_data, camera="head_cam")
+                image = renderer.render()  # MuJoCo returns RGB
+
+                # Uncomment to visualize the image in a window
+                # # Visualize the image in a window (OpenCV expects BGR)
+                # image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+                # cv2.imshow("Head Camera Image", image_bgr)
+                # cv2.waitKey(1)
+
+                step_count = 0
         locker.release()
 
         time_until_next_step = mj_model.opt.timestep - (
@@ -84,19 +89,22 @@ def SimulationThread():
 
 
 def PhysicsViewerThread():
-    # Copied from image_server.py
     global image
-    # Set ZeroMQ context and socket
-    context = zmq.Context()
-    socket = context.socket(zmq.PUB)
-    socket.bind(f"tcp://*:5555")
+
+    if config.HEAD_CAMERA_IMAGE_SERVER:
+        # Set ZeroMQ context and socket
+        context = zmq.Context()
+        socket = context.socket(zmq.PUB)
+        socket.bind(f"tcp://*:5555")
 
     while viewer.is_running():
         locker.acquire()
         viewer.sync()
-        if image is not None:
-            # Write image to shared memory similar to image_server.py
-            ret, buffer = cv2.imencode('.jpg', image)
+
+        if image is not None and config.HEAD_CAMERA_IMAGE_SERVER:
+            # Convert from RGB (MuJoCo) to BGR (OpenCV) before encoding
+            image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+            ret, buffer = cv2.imencode('.jpg', image_bgr)
             if not ret:
                 logger_mp.error("[Image Server] Frame imencode is failed.")
                 continue
@@ -104,14 +112,11 @@ def PhysicsViewerThread():
             jpg_bytes = buffer.tobytes()
 
             message = jpg_bytes
-
             socket.send(message)
 
         locker.release()
         time.sleep(config.VIEWER_DT)
 
-    else:
-        print("viewer is not running")
 
 if __name__ == "__main__":
     viewer_thread = Thread(target=PhysicsViewerThread)

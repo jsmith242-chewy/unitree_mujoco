@@ -12,3 +12,10 @@ ENABLE_ELASTIC_BAND = True # Virtual spring band, used for lifting h1
 
 SIMULATE_DT = 0.005  # Need to be larger than the runtime of viewer.sync()
 VIEWER_DT = 0.02  # 50 fps for viewer
+
+# Camera settings
+HEAD_CAMERA_ENABLE = True # Enable head camera
+HEAD_CAMERA_WIDTH = 640 # Head camera width
+HEAD_CAMERA_HEIGHT = 480 # Head camera height
+HEAD_CAMERA_FPS = 30 # Head camera fps
+HEAD_CAMERA_IMAGE_SERVER = True # Enable head camera image server (to publish ZMQ message for use with XR Teleoperate)
