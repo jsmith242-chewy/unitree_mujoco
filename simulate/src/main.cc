@@ -594,9 +594,17 @@ void *UnitreeSdk2BridgeThread(void *arg)
   param::config.band_attached_link = 6 * body_id;
   
   std::unique_ptr<UnitreeSDK2BridgeBase> interface = nullptr;
+  // TonyF (11/14/2025): This is such a hack, and I'm only making it worse
   if (m->nu > NUM_MOTOR_IDL_GO) {
-    interface = std::make_unique<G1Bridge>(m, d);
+    if (param::config.robot_scene.filename().string().find("_hands") != std::string::npos) {
+      std::cout << "G1WithHandsBridge creation" << std::endl;
+      interface = std::make_unique<G1WithHandsBridge>(m, d);
+    } else {
+      std::cout << "G1Bridge creation" << std::endl;
+      interface = std::make_unique<G1Bridge>(m, d);
+    }
   } else {
+    std::cout << "Go2Bridge creation" << std::endl;
     interface = std::make_unique<Go2Bridge>(m, d);
   }
   interface->start();

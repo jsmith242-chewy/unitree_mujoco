@@ -7,6 +7,8 @@
 #include <unitree/dds_wrapper/robots/go2/go2.h>
 #include <unitree/dds_wrapper/robots/g1/g1.h>
 #include <unitree/idl/hg/BmsState_.hpp>
+#include <unitree/idl/hg/HandState_.hpp>
+#include <unitree/idl/hg/HandCmd_.hpp>
 
 #include "param.h"
 #include "physics_joystick.h"
@@ -220,6 +222,190 @@ public:
         bmsstate->unlockAndPublish();
     }
 
+
     using BmsState_t = unitree::robot::RealTimePublisher<unitree_hg::msg::dds_::BmsState_>;
     std::unique_ptr<BmsState_t> bmsstate;
+};
+
+// Extremely cursed model for using the 29 DOF with hands
+// It's going to be a bit hacky, with a lot of hard coded constants for now, based on the model to start
+class G1WithHandsBridge : public RobotBridge<unitree::robot::g1::subscription::LowCmd, unitree::robot::g1::publisher::LowState>
+{
+public:
+    G1WithHandsBridge(mjModel *model, mjData *data) : RobotBridge(model, data)
+    {
+        std::cout << "G1WithHandsBridge constructor" << std::endl;
+        std::cout << "param::config.robot: " << param::config.robot << std::endl;
+        std::cout << "num_motor_: " << num_motor_ << std::endl;
+        if (param::config.robot.find("g1_with_hands") != std::string::npos) {
+            auto* g1_with_hands_lowstate = dynamic_cast<unitree::robot::g1::publisher::LowState*>(lowstate.get());
+            if (g1_with_hands_lowstate) {
+                auto scene = param::config.robot_scene.filename().string();
+                g1_with_hands_lowstate->msg_.mode_machine() = scene.find("23") != std::string::npos ? 4 : 5;
+            }
+        }
+        bmsstate = std::make_unique<BmsState_t>("rt/lf/bmsstate");
+        bmsstate->msg_.soc() = 100;
+        // TODO: Hand Publishers and Subscribers for "lf" low frequency topics?
+        left_hand_state = std::make_unique<HandState_t>("rt/dex3/left/state");
+        left_hand_state_lf = std::make_unique<HandState_t>("rt/lf/dex3/left/state");
+        left_hand_state->msg_.motor_state().resize(7);
+        left_hand_state_lf->msg_.motor_state().resize(7);
+        right_hand_state = std::make_unique<HandState_t>("rt/dex3/right/state");
+        right_hand_state_lf = std::make_unique<HandState_t>("rt/lf/dex3/right/state");
+        right_hand_state->msg_.motor_state().resize(7);
+        right_hand_state_lf->msg_.motor_state().resize(7);
+        left_hand_cmd = std::make_unique<HandCmd_t>("rt/dex3/left/cmd");
+        right_hand_cmd = std::make_unique<HandCmd_t>("rt/dex3/right/cmd");
+    }
+
+    void run() override
+    {
+        // Need to have our own loop here to run, since the hands and body have separate state and control topics
+        // First, we need to get the state and control messages for the body
+        if(!mj_data_) return;
+        if(lowstate->joystick) { lowstate->joystick->update(); }
+        
+        // Handle Body Commands and report state (lowcmd and lowstate)
+        
+        // lowcmd processing (body commands)
+        {
+            std::lock_guard<std::mutex> lock(lowcmd->mutex_);
+
+            // Handle up to left wrist (Mujoco Data Index 0-21)
+            for(int i(0); i<=21; i++) {
+                auto & m = lowcmd->msg_.motor_cmd()[i];
+                mj_data_->ctrl[i] = m.tau() +
+                                    m.kp() * (m.q() - mj_data_->sensordata[i]) +
+                                    m.kd() * (m.dq() - mj_data_->sensordata[i + num_motor_]);
+            }
+
+            // Handle right arm chain through right wrist (Mujoco Data Index 29-35)
+            // Mujoco Data indices 29-35 match the low_data indicies 22-28.
+            // Offset of 7 is the left hand joints reported in the mujoco data.
+            for(int i(22); i<=28; i++) {
+                auto & m = lowcmd->msg_.motor_cmd()[i];
+                mj_data_->ctrl[i+7] = m.tau() +
+                                    m.kp() * (m.q() - mj_data_->sensordata[i + 7]) +
+                                    m.kd() * (m.dq() - mj_data_->sensordata[i + 7 + num_motor_]);
+            }
+        }
+
+        // Left Hand Command Processing (Mujoco Data Index 22-28)
+        {
+            std::lock_guard<std::mutex> lock(left_hand_cmd->mutex_);
+            // Checking size in case command hasn't arrived yet
+            if (left_hand_cmd->msg_.motor_cmd().size() == 7) {
+                // Left hand indicies in mujoco data are 22-28
+                for(int i(0); i<7; i++) {
+                    auto & m = left_hand_cmd->msg_.motor_cmd()[i];
+                    mj_data_->ctrl[i + 22] = m.tau() +
+                                        m.kp() * (m.q() - mj_data_->sensordata[i + 22]) +
+                                        m.kd() * (m.dq() - mj_data_->sensordata[i + 22 + num_motor_]);
+                }
+            }
+        }
+
+        // Right Hand Command Processing (Mujoco Data Index 36-42)
+        {
+            std::lock_guard<std::mutex> lock(right_hand_cmd->mutex_);
+            // Right hand indicies in mujoco data are 36-42
+            // Checking size in case command hasn't arrived yet
+            if (right_hand_cmd->msg_.motor_cmd().size() == 7) {
+                for(int i(0); i<7; i++) {
+                    auto & m = right_hand_cmd->msg_.motor_cmd()[i];
+                    mj_data_->ctrl[i + 36] = m.tau() +
+                                                m.kp() * (m.q() - mj_data_->sensordata[i + 36]) +
+                                                m.kd() * (m.dq() - mj_data_->sensordata[i + 36 + num_motor_]);
+                }
+            }
+        }
+
+        // lowstate processing
+        if(lowstate->trylock()) 
+        {
+            for(int i(0); i<=21; i++) {
+                lowstate->msg_.motor_state()[i].q() = mj_data_->sensordata[i];
+                lowstate->msg_.motor_state()[i].dq() = mj_data_->sensordata[i + num_motor_];
+                lowstate->msg_.motor_state()[i].tau_est() = mj_data_->sensordata[i + 2 * num_motor_];
+            }
+
+            for(int i(22); i<=28; i++) {
+                lowstate->msg_.motor_state()[i].q() = mj_data_->sensordata[i + 7];
+                lowstate->msg_.motor_state()[i].dq() = mj_data_->sensordata[i + 7 + num_motor_];
+                lowstate->msg_.motor_state()[i].tau_est() = mj_data_->sensordata[i + 7 + 2 * num_motor_];
+            }
+            lowstate->msg_.tick() = std::round(mj_data_->time / 1e-3);
+            lowstate->unlockAndPublish();
+        }
+
+        // Left hand state processing (Mujoco Data Index 22-28)
+        if (left_hand_state->trylock()) {
+            for(int i(0); i<7; i++) {
+                left_hand_state->msg_.motor_state()[i].q() = mj_data_->sensordata[i + 22];
+                left_hand_state->msg_.motor_state()[i].dq() = mj_data_->sensordata[i + 22 + num_motor_];
+                left_hand_state->msg_.motor_state()[i].tau_est() = mj_data_->sensordata[i + 22 + 2 * num_motor_];
+            }
+            // Debug print message before publishing
+            left_hand_state->unlockAndPublish();
+        }
+        if (tick_count_ % lf_decimation_factor == 0 && left_hand_state_lf->trylock()) {
+            for(int i(0); i<7; i++) {
+                left_hand_state_lf->msg_.motor_state()[i].q() = mj_data_->sensordata[i + 22];
+                left_hand_state_lf->msg_.motor_state()[i].dq() = mj_data_->sensordata[i + 22 + num_motor_];
+                left_hand_state_lf->msg_.motor_state()[i].tau_est() = mj_data_->sensordata[i + 22 + 2 * num_motor_];
+            }
+            left_hand_state_lf->unlockAndPublish();
+        }
+
+        // Righthand state processing (Mujoco Data Index 36-42)
+        if (right_hand_state->trylock()) {
+            for(int i(0); i<7; i++) {
+                right_hand_state->msg_.motor_state()[i].q() = mj_data_->sensordata[i + 36];
+                right_hand_state->msg_.motor_state()[i].dq() = mj_data_->sensordata[i + 36 + num_motor_];
+                right_hand_state->msg_.motor_state()[i].tau_est() = mj_data_->sensordata[i + 36 + 2 * num_motor_];
+            }
+            right_hand_state->unlockAndPublish();
+        } 
+        if (tick_count_ % lf_decimation_factor == 0 && right_hand_state_lf->trylock()) {
+            for(int i(0); i<7; i++) {
+                right_hand_state_lf->msg_.motor_state()[i].q() = mj_data_->sensordata[i + 36];
+                right_hand_state_lf->msg_.motor_state()[i].dq() = mj_data_->sensordata[i + 36 + num_motor_];
+                right_hand_state_lf->msg_.motor_state()[i].tau_est() = mj_data_->sensordata[i + 36 + 2 * num_motor_];
+            }
+            right_hand_state_lf->unlockAndPublish();
+        }
+
+        // In practice, bmsstate is sent at a low frequency; here it is sent with the main loop
+        bmsstate->unlockAndPublish();
+        tick_count_++;
+    }
+
+    // Constants for actuator and joint indicies and offsets
+    // Actuator Mapping
+    //  29DOF With Hands Model                                         | 29 DOF Base Model
+    //          0-21  (Same)                                           |    0-21 Same
+    //         22-28  (Left Hand Thumb0,1,2, Middle 0,1, Index 0,1)    |    N/A
+    //         39-35                                                   |    22-28
+    //         36-42  (Right Hand)                                     |    N/A  
+    // Num Motors should be 43
+    // Joint index + 1 since Joint 0 is the unactuated floating base
+    // Joint Senor Indicies are
+    //    Position (Actuator Index)
+    //    Velocity (Actuator Index + 43)
+    //    Torque (Actuator Index + 2*43)
+
+    using BmsState_t = unitree::robot::RealTimePublisher<unitree_hg::msg::dds_::BmsState_>;
+    std::unique_ptr<BmsState_t> bmsstate;
+    using HandState_t = unitree::robot::RealTimePublisher<unitree_hg::msg::dds_::HandState_>;
+    std::unique_ptr<HandState_t> left_hand_state;
+    std::unique_ptr<HandState_t> right_hand_state;
+    std::unique_ptr<HandState_t> left_hand_state_lf;
+    std::unique_ptr<HandState_t> right_hand_state_lf;
+    using HandCmd_t = unitree::robot::SubscriptionBase<unitree_hg::msg::dds_::HandCmd_>;
+    std::unique_ptr<HandCmd_t> left_hand_cmd;
+    std::unique_ptr<HandCmd_t> right_hand_cmd;
+    uint64_t tick_count_ = 0;
+    const uint64_t lf_decimation_factor = 20;
+
 };
